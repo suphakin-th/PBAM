@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      # host network mode: localhost inside the container IS the host machine
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://USERNAME:PASSWORD@localhost:5432/pbam}
+      SECRET_KEY: change-me-in-production-use-openssl-rand-hex-32
+      ENVIRONMENT: development
+      STORAGE_PATH: /app/storage
+    network_mode: host
+    volumes:
+      - ./backend/src:/app/src:z
+      - backend_storage:/app/storage
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - backend
+    network_mode: host
+    volumes:
+      - ./frontend/src:/app/src:z
+
+volumes:
+  backend_storage:
