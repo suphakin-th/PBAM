@@ -96,6 +96,8 @@ class TransactionModel(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     transaction_date: Mapped[datetime] = mapped_column(Date, nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=[])
+    counterparty_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    counterparty_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     transfer_pair_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     source_document_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     is_recurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

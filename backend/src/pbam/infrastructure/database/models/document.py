@@ -64,6 +64,8 @@ class StagingTransactionModel(Base):
     exchange_rate: Mapped[Decimal | None] = mapped_column(Numeric(15, 8), nullable=True)
     transaction_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
     payment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    counterparty_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    counterparty_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     transaction_date: Mapped[str | None] = mapped_column(Text, nullable=True)  # ISO date string
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=[])

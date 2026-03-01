@@ -93,9 +93,18 @@ class TransactionCreate(BaseModel):
 class TransactionUpdate(BaseModel):
     description: str | None = None
     category_id: UUID | None = None
+    transaction_type: str | None = None
     payment_method: str | None = None
     tags: list[str] | None = None
     transaction_date: date | None = None
+    counterparty_name: str | None = None
+
+    @field_validator("transaction_type")
+    @classmethod
+    def valid_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("income", "expense", "transfer"):
+            raise ValueError("transaction_type must be income, expense, or transfer")
+        return v
 
 
 class TransactionResponse(BaseModel):
@@ -103,6 +112,8 @@ class TransactionResponse(BaseModel):
     account_id: UUID
     category_id: UUID | None
     payment_method: str | None
+    counterparty_ref: str | None
+    counterparty_name: str | None
     transfer_pair_id: UUID | None
     amount_thb: Decimal
     original_amount: Decimal | None
@@ -112,6 +123,7 @@ class TransactionResponse(BaseModel):
     transaction_date: date
     tags: list[str]
     is_recurring: bool
+    metadata: dict[str, Any] | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

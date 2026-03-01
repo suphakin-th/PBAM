@@ -30,6 +30,8 @@ export interface Transaction {
   account_id: string
   category_id: string | null
   payment_method: string | null
+  counterparty_ref: string | null
+  counterparty_name: string | null
   transfer_pair_id: string | null
   amount_thb: number
   original_amount: number | null
@@ -39,6 +41,8 @@ export interface Transaction {
   transaction_date: string
   tags: string[]
   is_recurring: boolean
+  /** OCR metadata — includes transaction_time (HH:MM) when imported from a PDF */
+  metadata: Record<string, unknown> | null
   created_at: string
 }
 

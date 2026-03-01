@@ -178,6 +178,8 @@ async def create_transaction(
     transaction_date: date,
     category_id: UUID | None = None,
     payment_method: str | None = None,
+    counterparty_ref: str | None = None,
+    counterparty_name: str | None = None,
     tags: list[str] | None = None,
     is_recurring: bool = False,
     source_document_id: UUID | None = None,
@@ -195,6 +197,8 @@ async def create_transaction(
         transaction_date=transaction_date,
         category_id=category_id,
         payment_method=payment_method,
+        counterparty_ref=counterparty_ref,
+        counterparty_name=counterparty_name,
         tags=tags or [],
         is_recurring=is_recurring,
         source_document_id=source_document_id,
@@ -209,9 +213,11 @@ async def update_transaction(
     user_id: UUID,
     description: str | None = None,
     category_id: UUID | None = None,
+    transaction_type: str | None = None,
     payment_method: str | None = None,
     tags: list[str] | None = None,
     transaction_date: date | None = None,
+    counterparty_name: str | None = None,
     repo: ITransactionRepository,
 ) -> Transaction:
     tx = await repo.get_by_id(transaction_id, user_id)
@@ -221,12 +227,16 @@ async def update_transaction(
         tx.description = description
     if category_id is not None:
         tx.category_id = category_id
+    if transaction_type is not None:
+        tx.transaction_type = TransactionType(transaction_type)
     if payment_method is not None:
         tx.payment_method = payment_method
     if tags is not None:
         tx.tags = tags
     if transaction_date is not None:
         tx.transaction_date = transaction_date
+    if counterparty_name is not None:
+        tx.counterparty_name = counterparty_name
     return await repo.save(tx)
 
 

@@ -101,6 +101,8 @@ class Transaction:
     transaction_date: date
     category_id: UUID | None = None
     payment_method: str | None = None
+    counterparty_ref: str | None = None
+    counterparty_name: str | None = None
     transfer_pair_id: UUID | None = None
     tags: list[str] = field(default_factory=list)
     source_document_id: UUID | None = None

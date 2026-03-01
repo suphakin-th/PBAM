@@ -73,6 +73,8 @@ class StagingTransaction:
     exchange_rate: Decimal | None = None
     transaction_type: str | None = None
     payment_method: str | None = None
+    counterparty_ref: str | None = None
+    counterparty_name: str | None = None
     description: str | None = None
     transaction_date: str | None = None  # ISO date string
     tags: list[str] = field(default_factory=list)

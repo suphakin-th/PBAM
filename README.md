@@ -33,11 +33,19 @@ who mtf want to use it for youself (Just personal and non-comercial) take it!!.
 | Bank | Product | Format | Detection |
 |------|---------|--------|-----------|
 | Krungsri | T1 credit card (General Card) | `DD/MM/YY  ···24 spaces···  DD/MM/YY  DESC  [PRINCIPAL  NNN/NNN]  MONTHLY_DUE` | Issuer header + wide date gap |
+| BAY / Kept | Kept savings account | `DD/MM/YYYY(BE)  HH:MM  DESCRIPTION  [DEBIT]  [CREDIT]  BALANCE  CHANNEL` | "Kept savings" / "ธนาคารกรุงศรีอยุธยา" header |
 | KTC | Credit card (JCB / World) | `DD/MM/YY DD/MM/YY DESCRIPTION AMOUNT` | Two date columns with year, compact spacing |
 | SCB | Credit card (UP2ME) | `DD/MM DD/MM DESCRIPTION AMOUNT` | Two date columns, no year |
 | SCB | Savings / current account | `DD/MM/YY HH:MM X1/X2 CHANNEL … DESC: …` | X1=income, X2=expense channel codes |
 | KBANK | Savings / current account | `DD-MM-YY [HH:MM] THAI_DESC AMOUNT BALANCE [CHANNEL]` | Thai income/expense keywords |
 | Scanned PDFs | Any | EasyOCR fallback (returns empty when EasyOCR not installed) | — |
+
+**BAY / Kept notes:**
+- Dates are in Buddhist Era (BE) — year is converted automatically (e.g. 2569 → 2026).
+- Multi-line descriptions are joined automatically.
+- Internal savings-pocket movements (`ฝากเก็บเองไป`, `แอบเก็บอัตโนมัติไป`, and the corresponding return flows) are **skipped** — they are not real income or expense.
+- Receipts from a Thai bank (`เงินเข้าจาก SCB/KBANK/…`) are imported as **transfer** type, not income, to prevent double-counting. Use the **Link transfer pair** button in the Transactions page to pair them with the matching outgoing transfer from your other account.
+- Interest income (`รับโอนดอกเบี้ยจาก …`) is correctly imported as **income**.
 
 **Payment method** is auto-detected from description keywords: PromptPay, QR code, Line Pay, TrueMoney, GrabPay, ATM, internet banking (K PLUS), subscriptions (Netflix / Spotify / YouTube), e-commerce (Shopee / Lazada / Amazon), Agoda, gaming (Hoyoverse / Steam), and more.
 

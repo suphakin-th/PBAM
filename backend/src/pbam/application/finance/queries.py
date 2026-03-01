@@ -1,6 +1,7 @@
 """Finance use-case queries, including the flow-tree aggregation."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -70,12 +71,17 @@ async def get_flow_tree(
     account_to_expense: dict[str, dict[str, Decimal]] = {}
     # Aggregate: paired account transfers (account_from → account_to → amount)
     transfer_account_flows: list[tuple[str, str, Decimal]] = []
+    # Aggregate: unpaired transfers grouped by counterparty ref
+    # key: (counterparty_label, account_key, is_inbound)  value: amount
+    unpaired_transfer_flows: dict[tuple[str, str, bool], Decimal] = {}
 
     total_income = Decimal("0")
     total_expense = Decimal("0")
 
     tx_by_id = {tx.id: tx for tx in transactions if not tx.is_deleted}
     seen_transfer_pairs: set[frozenset] = set()
+
+    _INBOUND_RE = re.compile(r"รับโอน|รับเงิน|เงินเข้าจาก", re.I)
 
     for tx in transactions:
         if tx.is_deleted:
@@ -93,17 +99,27 @@ async def get_flow_tree(
             account_to_expense.setdefault(account_key, {}).setdefault(cat_key, Decimal("0"))
             account_to_expense[account_key][cat_key] += tx.money.amount_thb
 
-        elif tx.transaction_type == TransactionType.TRANSFER and tx.transfer_pair_id:
-            pair_key = frozenset([tx.id, tx.transfer_pair_id])
-            if pair_key not in seen_transfer_pairs:
-                seen_transfer_pairs.add(pair_key)
-                paired = tx_by_id.get(tx.transfer_pair_id)
-                if paired:
-                    transfer_account_flows.append((
-                        str(tx.account_id),
-                        str(paired.account_id),
-                        tx.money.amount_thb,
-                    ))
+        elif tx.transaction_type == TransactionType.TRANSFER:
+            if tx.transfer_pair_id:
+                pair_key = frozenset([tx.id, tx.transfer_pair_id])
+                if pair_key not in seen_transfer_pairs:
+                    seen_transfer_pairs.add(pair_key)
+                    paired = tx_by_id.get(tx.transfer_pair_id)
+                    if paired:
+                        transfer_account_flows.append((
+                            str(tx.account_id),
+                            str(paired.account_id),
+                            tx.money.amount_thb,
+                        ))
+            else:
+                # Unpaired transfer — group by counterparty label so we aggregate
+                # multiple transactions to the same counterparty into one edge.
+                cp = tx.counterparty_ref or "External"
+                is_inbound = bool(_INBOUND_RE.search(tx.description or ""))
+                key = (cp, account_key, is_inbound)
+                unpaired_transfer_flows[key] = (
+                    unpaired_transfer_flows.get(key, Decimal("0")) + tx.money.amount_thb
+                )
 
     # Build nodes and edges
     nodes: list[FlowNode] = []
@@ -130,13 +146,15 @@ async def get_flow_tree(
                 amount_thb=amount,
             ))
 
-    # Account nodes (include accounts that only appear in transfers)
+    # Account nodes (include accounts that appear in any flow type)
     all_account_keys = set(
         k for flows in income_to_account.values() for k in flows
     ) | set(account_to_expense.keys())
     for from_key, to_key, _ in transfer_account_flows:
         all_account_keys.add(from_key)
         all_account_keys.add(to_key)
+    for (_cp, acct_key, _dir) in unpaired_transfer_flows:
+        all_account_keys.add(acct_key)
 
     for account_key in all_account_keys:
         account = accounts.get(UUID(account_key))
@@ -183,7 +201,7 @@ async def get_flow_tree(
                 amount_thb=amount,
             ))
 
-    # Transfer edges: account → account (paired transfers only)
+    # Transfer edges: account → account (paired transfers)
     for from_key, to_key, amount in transfer_account_flows:
         edges.append(FlowEdge(
             source_id=f"account_{from_key}",
@@ -191,6 +209,37 @@ async def get_flow_tree(
             amount_thb=amount,
             label="Transfer",
         ))
+
+    # Unpaired transfers: create counterparty pseudo-nodes + edges
+    # Group nodes by counterparty label (avoid duplicates)
+    seen_cp_nodes: set[str] = set()
+    for (cp_label, account_key, is_inbound), amount in unpaired_transfer_flows.items():
+        cp_node_id = f"transfer_{cp_label.replace(' ', '_')}"
+        if cp_node_id not in seen_cp_nodes:
+            seen_cp_nodes.add(cp_node_id)
+            nodes.append(FlowNode(
+                id=cp_node_id,
+                label=cp_label,
+                node_type="transfer",
+                total_thb=Decimal("0"),  # pseudo-node, no standalone total
+                color="#9254de",
+            ))
+        if is_inbound:
+            # Money came IN: counterparty → account
+            edges.append(FlowEdge(
+                source_id=cp_node_id,
+                target_id=f"account_{account_key}",
+                amount_thb=amount,
+                label="Transfer",
+            ))
+        else:
+            # Money went OUT: account → counterparty
+            edges.append(FlowEdge(
+                source_id=f"account_{account_key}",
+                target_id=cp_node_id,
+                amount_thb=amount,
+                label="Transfer",
+            ))
 
     return FlowTree(
         nodes=nodes,

@@ -87,9 +87,15 @@ async def _run_ocr_and_stage(
                 amount_thb=row.amount,
                 transaction_type=row.transaction_type,
                 payment_method=row.payment_method,
+                counterparty_ref=row.counterparty_ref,
+                counterparty_name=row.counterparty_name,
                 description=row.description,
                 transaction_date=row.transaction_date,
-                confidence=row.confidence,
+                # Store transaction_time inside confidence JSONB (no migration needed)
+                confidence={
+                    **row.confidence,
+                    **({"transaction_time": row.transaction_time} if row.transaction_time else {}),
+                },
                 raw_text=row.raw_text,
             )
             for row in result.rows
@@ -120,6 +126,7 @@ async def update_staging_row(
     allowed = {
         "account_id", "category_id", "amount_thb", "original_amount",
         "original_currency", "exchange_rate", "transaction_type", "payment_method",
+        "counterparty_ref", "counterparty_name",
         "description", "transaction_date", "tags",
     }
     for key, value in updates.items():
@@ -184,12 +191,19 @@ async def commit_staging(
             exchange_rate=row.exchange_rate,
             transaction_type=row.transaction_type,
             payment_method=row.payment_method or "unknown",
+            counterparty_ref=row.counterparty_ref,
+            counterparty_name=row.counterparty_name,
             description=row.description or "(imported)",
             transaction_date=tx_date,
             category_id=row.category_id,
             tags=row.tags,
             source_document_id=job_id,
-            metadata={"ocr_staging_id": str(row.id)},
+            metadata={
+                "ocr_staging_id": str(row.id),
+                # Preserve the HH:MM time extracted from the PDF statement line
+                **({"transaction_time": row.confidence["transaction_time"]}
+                   if row.confidence.get("transaction_time") else {}),
+            },
             repo=transaction_repo,
         )
         row.confirm()

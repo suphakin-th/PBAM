@@ -30,10 +30,13 @@ class ExtractedRow:
     """A single transaction row extracted from OCR output."""
     raw_text: str
     transaction_date: str | None = None  # ISO format YYYY-MM-DD if parsed
+    transaction_time: str | None = None  # HH:MM extracted from PDF line (e.g. "16:25")
     description: str | None = None
     amount: Decimal | None = None
-    transaction_type: str | None = None  # 'income' or 'expense'
+    transaction_type: str | None = None  # 'income', 'expense', or 'transfer'
     payment_method: str | None = None   # see PaymentMethod enum
+    counterparty_ref: str | None = None  # bank code + masked account (e.g. "SCB X7290")
+    counterparty_name: str | None = None # person or merchant name
     confidence: dict[str, float] = field(default_factory=dict)
     sort_order: int = 0
 
@@ -90,6 +93,83 @@ _DATE_PATTERNS = [
 _AMOUNT_PATTERN = re.compile(r"[\d,]+\.\d{2}")
 _NEGATIVE_INDICATORS = {"DR", "ถอน", "จ่าย", "debit", "withdraw"}
 _POSITIVE_INDICATORS = {"CR", "ฝาก", "รับ", "credit", "deposit"}
+
+# ── Shared: Thai bank code + transfer-direction keywords ─────────────────────
+# Used by multiple parsers to upgrade 'expense'/'income' → 'transfer' when the
+# description clearly shows money moving between two bank accounts.
+_THAI_BANK_CODE_RE = re.compile(
+    r"\b(SCB|KBANK|KBank|BBL|KTB|BAY|TMB|TTB|GSB|BAAC|GHB|KK|TISCO|LH"
+    r"|CIMB|UOB|CITI|ICBC|TBANK|LHBANK|GHBANK|ISBT|TCRB"
+    r"|Krungsri|กรุงศรี|กสิกร|ไทยพาณิชย์|กรุงไทย|กรุงเทพ|ทหารไทย)\b"
+)
+_TRANSFER_OUT_KW_RE = re.compile(r"โอนไป|โอนออก|โอนเงินไป", re.I)
+_TRANSFER_IN_KW_RE = re.compile(r"โอนมาจาก|รับโอนจาก|รับเงินจาก", re.I)
+
+# ── Credit card bill payment detection ───────────────────────────────────────
+# When a savings/current account pays a credit card bill, the debit shows up as
+# an outgoing payment on the savings statement.  These are transfers between own
+# accounts, NOT expenses — the real expenses were already recorded when the card
+# was swiped.  Match the Thai "เพื่อชำระ … CARD/บัตร" pattern plus common
+# credit card issuer names.
+_CREDIT_CARD_PAYMENT_RE = re.compile(
+    r"เพื่อชำระ.*(CARD|KTC|KRUNGTHAI|GENERAL\s*CARD|Krungsri|AYUDHYA|บัตรเครดิต|บัตร\s*เครดิต)"
+    r"|ชำระบัตรเครดิต"
+    r"|credit\s*card\s*payment"
+    r"|ชำระ\s*(KTC|KRUNGTHAI|GENERAL|Krungsri|SCB\s*CARD|KBANK\s*CARD|BAY\s*CARD)\b"
+    # SCB "จ่ายบิล" (bill payment) to credit card / loan issuers
+    r"|จ่ายบิล\s+.*(CARD|KTC|KRUNGTHAI|AYUDHYA|CardX|credit|บัตร)",
+    re.I,
+)
+
+# Investment/securities account transfers (savings → brokerage/fund) = not expense
+_INVESTMENT_TRANSFER_RE = re.compile(
+    r"Transfer\s+to\s+SCB.*(Securities|หลักทรัพย์|Webull|Invest)"
+    r"|DDR\s+(บริษัทหลักทรัพย์|Securities|อินโนเวสท์|InnovestX)",
+    re.I,
+)
+
+# ── Credit card: payment RECEIVED detection ───────────────────────────────────
+# On a credit card statement a negative row = credit = money coming IN.
+# Most of these are the cardholder paying their own bill from a debit account
+# — they should be 'transfer', not 'income'.
+# Matches the standard "Payment-BANK(code)Channel" format used by Thai credit
+# card issuers (KTC, SCB Visa, Krungsri) plus plain "Payment received".
+_CC_PAYMENT_RECEIVED_RE = re.compile(
+    r"Payment[-\s]*(KBANK|SCB|BAY|BBL|KTB|TMB|TTB|Krungsri|PromptPay|\d{3})"
+    r"|\bpayment\s+received\b"
+    r"|ขอบคุณสำหรับยอดชำระ"    # "Thank you for payment" — Krungsri style
+    r"|ยอดชำระจากบัญชี",          # "payment from account"
+    re.I,
+)
+
+# ── Counterparty extraction ───────────────────────────────────────────────────
+# Matches a bank code + optional masked account ref (e.g. "SCB X7290", "BAY x4497")
+# then captures any trailing text as the person/merchant name.
+_COUNTERPARTY_EXTRACT_RE = re.compile(
+    r"(SCB|KBANK|KBank|BBL|KTB|BAY|TMB|TTB|GSB|BAAC|GHB|KK|TISCO|LH"
+    r"|CIMB|UOB|CITI|ICBC|TBANK|LHBANK|GHBANK|Krungsri|กรุงศรี|กสิกร"
+    r"|ไทยพาณิชย์|กรุงไทย|กรุงเทพ|ทหารไทย)"
+    r"(?:\s+([Xx]\d{3,}|\d{4,}))?"  # optional: masked account ref "X7290" / "x4497"
+    r"[ \t]*(.*?)$",
+    re.I,
+)
+
+
+def _extract_counterparty(description: str) -> tuple[str | None, str | None]:
+    """Return (counterparty_ref, counterparty_name) from a transaction description.
+
+    counterparty_ref  — bank code + optional masked number, e.g. "SCB X7290", "BAY x4497"
+    counterparty_name — person or merchant name that follows, e.g. "นาย สุภกิณห์ ธิวงค์"
+    """
+    m = _COUNTERPARTY_EXTRACT_RE.search(description)
+    if not m:
+        return None, None
+    bank = m.group(1)
+    acct = (m.group(2) or "").strip()
+    name = (m.group(3) or "").strip()
+    ref = f"{bank} {acct}".strip() if acct else bank
+    return ref, name or None
+
 
 # Payment method detection patterns (checked in order, first match wins)
 # Format: (pattern, payment_method_value)
@@ -264,6 +344,11 @@ def _parse_pdftotext_lines(lines: list[str]) -> list[ExtractedRow]:
         payment_method = _detect_payment_method(description)
         tx_type = "income" if is_negative else "expense"
 
+        # On a credit card statement a negative (income) row that looks like
+        # a bill payment = the cardholder paid from their debit account → transfer.
+        if tx_type == "income" and _CC_PAYMENT_RECEIVED_RE.search(description):
+            tx_type = "transfer"
+
         rows.append(ExtractedRow(
             raw_text=line,
             transaction_date=parsed_date,
@@ -395,7 +480,7 @@ def _parse_krusri_lines(lines: list[str]) -> list[ExtractedRow]:
 # X1=credit/income, X2=debit/expense
 _SCB_TRAN_PATTERN = re.compile(
     r"^(\d{2}/\d{2}/\d{2})"                  # date DD/MM/YY
-    r"\s+\d{2}:\d{2}"                         # time
+    r"\s+(\d{2}:\d{2})"                       # time HH:MM (captured from PDF)
     r"\s+(X[12])"                             # code (X1=income, X2=expense)
     r"\s+([A-Z]+)"                            # channel (ENET, ATM, BCMS, SIPI)
     r"(.*)"                                   # amounts section
@@ -430,7 +515,7 @@ def _parse_scb_tran_lines(lines: list[str]) -> list[ExtractedRow]:
         if not m:
             continue
 
-        date_str, code, channel, amounts_str, description = m.groups()
+        date_str, time_str, code, channel, amounts_str, description = m.groups()
         amounts = _amounts_re.findall(amounts_str)
         if not amounts:
             continue
@@ -444,18 +529,37 @@ def _parse_scb_tran_lines(lines: list[str]) -> list[ExtractedRow]:
         tx_type = "income" if code == "X1" else "expense"
         description = description.strip()
 
+        # Override: credit card bill / loan payment (savings → card/loan) = transfer
+        if tx_type == "expense" and _CREDIT_CARD_PAYMENT_RE.search(description):
+            tx_type = "transfer"
+
+        # Override: investment/securities account top-up = transfer
+        if tx_type == "expense" and _INVESTMENT_TRANSFER_RE.search(description):
+            tx_type = "transfer"
+
+        # Override: inter-bank transfer keywords + bank code → 'transfer'
+        if tx_type != "transfer" and _THAI_BANK_CODE_RE.search(description):
+            if tx_type == "expense" and _TRANSFER_OUT_KW_RE.search(description):
+                tx_type = "transfer"
+            elif tx_type == "income" and _TRANSFER_IN_KW_RE.search(description):
+                tx_type = "transfer"
+
         # Payment method: check description first (more specific), then channel
         combined = description + " " + channel
         payment_method = _detect_payment_method(combined) or _SCB_CHANNEL_TO_METHOD.get(channel.upper())
+        cp_ref, cp_name = _extract_counterparty(description)
 
         parsed_date, date_conf = _parse_date(date_str)
         rows.append(ExtractedRow(
             raw_text=line,
             transaction_date=parsed_date,
+            transaction_time=time_str.strip(),
             description=description,
             amount=amount,
             transaction_type=tx_type,
             payment_method=payment_method,
+            counterparty_ref=cp_ref,
+            counterparty_name=cp_name,
             confidence={
                 "amount": 0.95,
                 "date": date_conf,
@@ -474,7 +578,7 @@ def _parse_scb_tran_lines(lines: list[str]) -> list[ExtractedRow]:
 # Format: DD-MM-YY [HH:MM] THAI_DESCRIPTION  AMOUNT  BALANCE  CHANNEL  MEMO
 _KBANK_TRAN_PATTERN = re.compile(
     r"^(\d{2}-\d{2}-\d{2})"              # date DD-MM-YY
-    r"(?:[ \t]+\d{2}:\d{2})?"            # optional time HH:MM
+    r"(?:[ \t]+(\d{2}:\d{2}))?"          # optional time HH:MM (captured from PDF)
     r"[ \t]+(.+?)[ \t]{3,}"              # description (lazy, ends at 3+ spaces)
     r"([\d,]+\.\d{2})"                   # transaction amount
     r"[ \t]+([\d,]+\.\d{2})"             # running balance
@@ -505,8 +609,9 @@ def _parse_kbank_lines(lines: list[str]) -> list[ExtractedRow]:
         if not m:
             continue
 
-        date_str, description, amount_str, _balance, channel_memo = m.groups()
+        date_str, time_str, description, amount_str, _balance, channel_memo = m.groups()
         description = description.strip()
+        channel_memo = (channel_memo or "").strip()
 
         # Skip opening/closing balance rows
         if _KBANK_SKIP_RE.search(description):
@@ -517,32 +622,60 @@ def _parse_kbank_lines(lines: list[str]) -> list[ExtractedRow]:
         except InvalidOperation:
             continue
 
-        # Determine income/expense from Thai description
-        if _KBANK_INCOME_RE.search(description):
+        # Enrich description: strip the leading channel tag (K PLUS, K-Cash, etc.)
+        # from channel_memo and append whatever remains (counterparty / company name).
+        # e.g. "K PLUS  จาก SCB X7290 นาย สุภกิณห์ ธิวงค์" → append "จาก SCB X7290 นาย..."
+        #      "pacificcrosshealth" → append as-is (no channel tag)
+        ch_tag_m = _KBANK_CHANNEL_RE.match(channel_memo)
+        memo_suffix = channel_memo[ch_tag_m.end():].strip() if ch_tag_m else channel_memo
+        full_description = f"{description} {memo_suffix}".strip() if memo_suffix else description
+
+        # Determine income/expense from Thai description (use full enriched text)
+        if _KBANK_INCOME_RE.search(full_description):
             tx_type = "income"
-        elif _KBANK_EXPENSE_RE.search(description):
+        elif _KBANK_EXPENSE_RE.search(full_description):
             tx_type = "expense"
         else:
             continue  # unknown type — skip
+
+        # Override: credit card bill / loan payment (savings → card/loan) = transfer
+        if tx_type == "expense" and _CREDIT_CARD_PAYMENT_RE.search(full_description):
+            tx_type = "transfer"
+
+        # Override: investment/securities account top-up = transfer
+        if tx_type == "expense" and _INVESTMENT_TRANSFER_RE.search(full_description):
+            tx_type = "transfer"
+
+        # Override: inter-bank transfer keywords + bank code → 'transfer'
+        if tx_type != "transfer" and _THAI_BANK_CODE_RE.search(full_description):
+            if tx_type == "expense" and re.search(r"โอนเงิน|โอนออก|โอนไป", full_description):
+                tx_type = "transfer"
+            elif tx_type == "income" and re.search(r"รับโอน|รับเงิน", full_description):
+                tx_type = "transfer"
 
         # Date is DD-MM-YY (hyphen) — convert to slash for _parse_date
         date_slash = date_str.replace("-", "/")
         parsed_date, date_conf = _parse_date(date_slash)
 
         # Payment method from channel/memo
-        channel_text = (channel_memo or "") + " " + description
+        channel_text = channel_memo + " " + full_description
         payment_method = _detect_payment_method(channel_text)
         if payment_method is None and channel_memo:
             if _KBANK_CHANNEL_RE.search(channel_memo):
                 payment_method = "bank_transfer"
 
+        cp_ref, cp_name = _extract_counterparty(full_description)
+
         rows.append(ExtractedRow(
             raw_text=line,
             transaction_date=parsed_date,
-            description=description,
+            transaction_time=time_str.strip() if time_str else None,
+            description=full_description,
             amount=amount,
             transaction_type=tx_type,
             payment_method=payment_method,
+            counterparty_ref=cp_ref,
+            counterparty_name=cp_name,
             confidence={
                 "amount": 0.95,
                 "date": date_conf,
@@ -557,6 +690,207 @@ def _parse_kbank_lines(lines: list[str]) -> list[ExtractedRow]:
     return rows
 
 
+# ── BAY (Kept by Krungsri) Savings Account Statement ─────────────────────────
+# Format: DD/MM/YYYY(BE)  HH:MM  DESCRIPTION   [DEBIT_AMT]   [CREDIT_AMT]   BALANCE   CHANNEL
+# Buddhist Era dates: year > 2500 → subtract 543 for CE year.
+# Two-column layout: debit amount OR credit amount appears, the other is blank.
+# Multi-line: description can continue on the next line(s) with no date prefix.
+# Internal savings-pocket transfers (ฝากเก็บเองไป / แอบเก็บอัตโนมัติไป and the
+# corresponding return flows "เงินเข้าจาก Grow/Fun savings") are skipped.
+# Inter-bank receipts "เงินเข้าจาก [BANK_CODE]" are marked as *transfer* to avoid
+# inflating income totals — the user links them as transfer pairs in the UI.
+_BAY_HEADER_RE = re.compile(
+    r"Kept\s+by\s+krungsri|ธนาคารกรุงศรีอยุธยา|Kept\s+savings|keptbykrungsri",
+    re.I,
+)
+_BAY_DATE_LINE_RE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})\s+(.+)$")
+_BAY_AMOUNT_RE = re.compile(r"[\d,]+\.\d{2}")
+_BAY_CHANNEL_RE = re.compile(
+    r"\b(Kept|OTH\.Mobile|OTH\.ATM|OTH\.Internet|OTH\.Counter|OTH\.CDM"
+    r"|System|KMA|KOL|KBOL|KS\s+ATM|E-PAYMENT|BILL\s+PAYMENT|POS|EDC"
+    r"|Branch|VISA|TELE\s+BANKING)\s*$",
+    re.I,
+)
+# Lines to ignore: headers, footers, page breaks, summary rows
+_BAY_IGNORE_LINE_RE = re.compile(
+    r"Previous\s+balance|Ending\s+balance"
+    r"|รวมรายการ|สิ้นสุดข้อมูล|End\s+of\s+statement"
+    r"|Kept\s+by\s+krungsri|ธนาคารกรุงศรีอยุธยา|keptbykrungsri"
+    r"|Page\s+\d+/\s*\d+|คำอธิบายช่องทาง|Channel\s+description"
+    r"|วันที่\s+เวลา|Date\s+Time|Withdrawal|Deposit|Balance\s+\(THB\)"
+    r"|Digital\s+account|ประเภทบัญชี|Account\s+type|รายการเดินบัญชี"
+    r"|e-Statement|Period|รอบระหว่าง|ข้อมูล\s+ณ\s+วันที่|Date\s+as\s+of"
+    r"|Kept\s+help\s+center|Bank\s+of\s+Ayudhya|เลขที่บัญชี|Reference\s+no"
+    r"|ถอน/โอนออก|ฝาก/โอนเข้า|คงเหลือ|ช่องทาง"
+    # Page-header data values that appear as right-aligned standalone lines
+    r"|^Kept\s+savings$"          # account type value
+    r"|^\d{3}-\d-\d{5}-\d"        # account number (000-7-71449-7)
+    r"|Total\s+(withdrawal|deposit)"
+    r"|รายการ\s*$",               # bare column header word
+    re.I | re.MULTILINE,
+)
+# Internal savings-pocket operations → skip entirely
+_BAY_INTERNAL_RE = re.compile(r"ฝากเก็บเองไป|แอบเก็บอัตโนมัติไป")
+# Transfer *from* a savings pocket back to main → skip (just reversal of above)
+_BAY_FROM_POCKET_RE = re.compile(r"^เงินเข้าจาก\s+\w+\s+savings\b", re.I)
+# Thai bank codes — receipt from these → transaction_type = 'transfer'
+_BAY_BANK_CODE_RE = re.compile(
+    r"\b(SCB|KBANK|KBank|BBL|KTB|BAY|TMB|TTB|GSB|BAAC|GHB|KK|TISCO|LH"
+    r"|CIMB|UOB|CITI|ICBC|TBANK|LHBANK|GHBANK|ISBT|TCRB)\b"
+)
+# Description keyword → transaction type
+_BAY_INCOME_RE = re.compile(r"รับโอนดอกเบี้ย|รับดอกเบี้ย")          # interest income
+_BAY_TRANSFER_IN_RE = re.compile(r"^เงินเข้าจาก\b")                   # money received
+_BAY_TRANSFER_OUT_RE = re.compile(r"^เงินออกไป\b")                     # outgoing transfer
+_BAY_EXPENSE_RE = re.compile(r"จ่ายด้วย|ชำระ")                        # QR/payment
+_BAY_CHANNEL_TO_METHOD: dict[str, str] = {
+    "kept": "digital_wallet",
+    "oth.mobile": "bank_transfer",
+    "oth.atm": "atm",
+    "oth.internet": "bank_transfer",
+    "oth.counter": "bank_transfer",
+    "oth.cdm": "bank_transfer",
+    "system": "bank_transfer",
+    "kma": "bank_transfer",
+    "kol": "bank_transfer",
+    "kbol": "bank_transfer",
+    "ks atm": "atm",
+}
+
+
+def _parse_bay_lines(lines: list[str]) -> list[ExtractedRow]:
+    """Parse Kept by Krungsri (Bank of Ayudhya) savings account e-Statement.
+
+    Columnar format with Buddhist Era (BE) dates — year >2500, subtract 543 for CE.
+    Each transaction's amounts live on the *first* line; subsequent lines add
+    description continuation only.  Internal savings-pocket movements are skipped.
+    Inter-bank receipts ('เงินเข้าจาก SCB/KBANK/…') are typed as 'transfer' so that
+    they do not inflate income totals before the user links the transfer pair.
+    """
+    header = "\n".join(lines[:40])
+    if not _BAY_HEADER_RE.search(header):
+        return []
+
+    rows: list[ExtractedRow] = []
+    sort_order = 0
+    pending: dict | None = None   # {date_str, first_line, extra: list[str]}
+
+    def flush() -> None:
+        nonlocal pending, sort_order
+        if pending is None:
+            return
+        entry, pending = pending, None
+
+        first_line: str = entry["first_line"]
+        extra: list[str] = entry["extra"]
+
+        # All amounts live on the first line; last = running balance, first = tx
+        amounts = _BAY_AMOUNT_RE.findall(first_line)
+        if len(amounts) < 2:
+            return  # balance-only row or header artefact
+
+        try:
+            tx_amount = Decimal(amounts[0].replace(",", ""))
+        except InvalidOperation:
+            return
+
+        # Description = everything before the first amount on the first line
+        first_amt_match = _BAY_AMOUNT_RE.search(first_line)
+        desc_first = first_line[:first_amt_match.start()].strip() if first_amt_match else first_line.strip()
+
+        # Channel = last token on the first line (after all amounts)
+        ch_m = _BAY_CHANNEL_RE.search(first_line)
+        channel = ch_m.group(1).strip() if ch_m else None
+
+        # Join continuation lines into the description
+        extra_text = " ".join(s.strip() for s in extra if s.strip())
+        description = (desc_first + (" " + extra_text if extra_text else "")).strip()
+
+        # Skip internal savings-pocket operations
+        if _BAY_INTERNAL_RE.search(description):
+            return
+        if _BAY_FROM_POCKET_RE.search(description):
+            return
+
+        # Determine transaction type
+        if _BAY_INCOME_RE.search(description):
+            tx_type = "income"
+        elif _BAY_TRANSFER_IN_RE.search(description):
+            # "เงินเข้าจาก [source]" — treat as transfer when source is a bank code,
+            # otherwise as income (salary / peer payment from a person).
+            tx_type = "transfer" if _BAY_BANK_CODE_RE.search(description) else "income"
+        elif _BAY_TRANSFER_OUT_RE.search(description):
+            tx_type = "transfer"
+        elif _BAY_EXPENSE_RE.search(description):
+            tx_type = "expense"
+        else:
+            return  # unknown — skip
+
+        # Override: credit card bill / loan payment (savings → card/loan) = transfer
+        if tx_type == "expense" and _CREDIT_CARD_PAYMENT_RE.search(description):
+            tx_type = "transfer"
+
+        # Override: investment/securities account top-up = transfer
+        if tx_type == "expense" and _INVESTMENT_TRANSFER_RE.search(description):
+            tx_type = "transfer"
+
+        parsed_date, date_conf = _parse_date(entry["date_str"])
+
+        # Payment method: description keywords take priority, then channel mapping
+        payment_method = _detect_payment_method(description)
+        if payment_method is None:
+            if re.search(r"จ่ายด้วย\s*QR", description, re.I):
+                payment_method = "qr_code"
+            elif channel:
+                payment_method = _BAY_CHANNEL_TO_METHOD.get(channel.lower())
+
+        cp_ref, cp_name = _extract_counterparty(description)
+
+        rows.append(ExtractedRow(
+            raw_text=first_line,
+            transaction_date=parsed_date,
+            transaction_time=entry.get("time_str"),
+            description=description,
+            amount=tx_amount,
+            transaction_type=tx_type,
+            payment_method=payment_method,
+            counterparty_ref=cp_ref,
+            counterparty_name=cp_name,
+            confidence={
+                "amount": 0.95,
+                "date": date_conf,
+                "transaction_type": 0.90,
+                "description": 0.85,
+                "payment_method": 0.70 if payment_method else 0.0,
+            },
+            sort_order=sort_order,
+        ))
+        sort_order += 1
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _BAY_IGNORE_LINE_RE.search(stripped):
+            continue
+
+        m = _BAY_DATE_LINE_RE.match(stripped)
+        if m:
+            flush()
+            date_str, time_str, rest = m.groups()
+            pending = {"date_str": date_str, "time_str": time_str, "first_line": rest, "extra": []}
+        elif pending is not None:
+            # Skip purely numeric lines (stray totals/balances) and bare date-range
+            # lines that appear in page headers (e.g. "01/01/2569 - 01/03/2569")
+            is_numeric_only = re.match(r"^[\d,.\s]+$", stripped)
+            is_date_range = re.match(r"^\d{2}/\d{2}/\d{4}\s+-\s+\d{2}/\d{2}/\d{4}$", stripped)
+            if not is_numeric_only and not is_date_range:
+                pending["extra"].append(stripped)
+
+    flush()
+    return rows
+
+
 def process_pdf(pdf_bytes: bytes) -> OcrResult:
     """Full pipeline: PDF bytes → OcrResult with extracted rows.
 
@@ -568,6 +902,7 @@ def process_pdf(pdf_bytes: bytes) -> OcrResult:
     # Strategy 1: pdftotext — try all parsers in order (first with rows wins)
     _PARSERS = [
         ("krusri",   _parse_krusri_lines),       # Krungsri T1 credit card (General Card Services)
+        ("bay",      _parse_bay_lines),           # BAY / Kept by Krungsri savings account (BE dates)
         ("cc",       _parse_pdftotext_lines),    # KTC/SCB credit card (DD/MM or DD/MM/YY)
         ("scb_tran", _parse_scb_tran_lines),     # SCB savings/current account (X1/X2 channel)
         ("kbank",    _parse_kbank_lines),         # KBANK savings/current account (Thai desc)

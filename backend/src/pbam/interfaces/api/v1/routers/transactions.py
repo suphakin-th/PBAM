@@ -181,6 +181,8 @@ def _tx_response(tx) -> TransactionResponse:
         account_id=tx.account_id,
         category_id=tx.category_id,
         payment_method=tx.payment_method,
+        counterparty_ref=tx.counterparty_ref,
+        counterparty_name=tx.counterparty_name,
         transfer_pair_id=tx.transfer_pair_id,
         amount_thb=tx.money.amount_thb,
         original_amount=tx.money.original_amount if tx.money.is_foreign_currency else None,
@@ -190,5 +192,6 @@ def _tx_response(tx) -> TransactionResponse:
         transaction_date=tx.transaction_date,
         tags=tx.tags,
         is_recurring=tx.is_recurring,
+        metadata=tx.metadata or None,
         created_at=tx.created_at,
     )

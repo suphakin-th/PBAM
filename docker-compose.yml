@@ -3,10 +3,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    env_file:
+      - .env          # provides DATABASE_URL, SECRET_KEY (ignored if file absent)
     environment:
-      # host network mode: localhost inside the container IS the host machine
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://USERNAME:PASSWORD@localhost:5432/pbam}
-      SECRET_KEY: change-me-in-production-use-openssl-rand-hex-32
+      # These override env_file; docker-compose.db.yml further overrides DATABASE_URL
       ENVIRONMENT: development
       STORAGE_PATH: /app/storage
     network_mode: host
