@@ -1,5 +1,6 @@
 """Transactions router: CRUD + flow tree."""
 from datetime import date
+from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
@@ -53,12 +54,19 @@ async def list_transactions(
     date_to: Annotated[date | None, Query()] = None,
     account_id: Annotated[UUID | None, Query()] = None,
     category_id: Annotated[UUID | None, Query()] = None,
+    transaction_type: Annotated[str | None, Query()] = None,
+    amount_min: Annotated[Decimal | None, Query()] = None,
+    amount_max: Annotated[Decimal | None, Query()] = None,
+    uncategorized: Annotated[bool | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
     filter_kwargs = dict(
         date_from=date_from, date_to=date_to,
         account_id=account_id, category_id=category_id,
+        transaction_type=transaction_type,
+        amount_min=amount_min, amount_max=amount_max,
+        uncategorized=uncategorized,
     )
     txs, total = await facade.list_transactions_with_count(
         current_user_id, limit=limit, offset=offset, **filter_kwargs

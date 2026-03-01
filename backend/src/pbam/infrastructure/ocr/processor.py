@@ -112,19 +112,24 @@ _TRANSFER_IN_KW_RE = re.compile(r"โอนมาจาก|รับโอนจ
 # was swiped.  Match the Thai "เพื่อชำระ … CARD/บัตร" pattern plus common
 # credit card issuer names.
 _CREDIT_CARD_PAYMENT_RE = re.compile(
-    r"เพื่อชำระ.*(CARD|KTC|KRUNGTHAI|GENERAL\s*CARD|Krungsri|AYUDHYA|บัตรเครดิต|บัตร\s*เครดิต)"
+    r"เพื่อชำระ.*(CARD|KTC|KRUNGTHAI|GENERAL\s*CARD|Krungsri|AYUDHYA\s+CARD|AYUDHYA\s+CREDIT|บัตรเครดิต|บัตร\s*เครดิต)"
     r"|ชำระบัตรเครดิต"
     r"|credit\s*card\s*payment"
     r"|ชำระ\s*(KTC|KRUNGTHAI|GENERAL|Krungsri|SCB\s*CARD|KBANK\s*CARD|BAY\s*CARD)\b"
-    # SCB "จ่ายบิล" (bill payment) to credit card / loan issuers
-    r"|จ่ายบิล\s+.*(CARD|KTC|KRUNGTHAI|AYUDHYA|CardX|credit|บัตร)",
+    # SCB "จ่ายบิล" (bill payment) to credit card issuers only
+    # "AYUDHYA" alone is NOT sufficient — Ayudhya Capital (loan co.) is expense, not transfer
+    r"|จ่ายบิล\s+.*(CARD|KTC|KRUNGTHAI|AYUDHYA\s+CARD|CardX|credit|บัตร)",
     re.I,
 )
 
-# Investment/securities account transfers (savings → brokerage/fund) = not expense
+# Investment/securities account transfers (savings ↔ brokerage/exchange) = transfer, not expense/income
+# Covers: InnovestX (SCB Securities), Webull (foreign broker), Binance (crypto)
 _INVESTMENT_TRANSFER_RE = re.compile(
     r"Transfer\s+to\s+SCB.*(Securities|หลักทรัพย์|Webull|Invest)"
-    r"|DDR\s+(บริษัทหลักทรัพย์|Securities|อินโนเวสท์|InnovestX)",
+    r"|DDR\s+(บริษัทหลักทรัพย์|Securities|อินโนเวสท์|InnovestX)"
+    r"|\bInnovestX\b|\bอินโนเวสท์\b"
+    r"|\bWebull\b"
+    r"|\bBinance\b|\bBINANCE\b",
     re.I,
 )
 
@@ -143,14 +148,26 @@ _CC_PAYMENT_RECEIVED_RE = re.compile(
 )
 
 # ── Counterparty extraction ───────────────────────────────────────────────────
-# Matches a bank code + optional masked account ref (e.g. "SCB X7290", "BAY x4497")
-# then captures any trailing text as the person/merchant name.
-_COUNTERPARTY_EXTRACT_RE = re.compile(
-    r"(SCB|KBANK|KBank|BBL|KTB|BAY|TMB|TTB|GSB|BAAC|GHB|KK|TISCO|LH"
+_BANK_CODES = (
+    r"SCB|KBANK|KBank|BBL|KTB|BAY|TMB|TTB|GSB|BAAC|GHB|KK|TISCO|LH"
     r"|CIMB|UOB|CITI|ICBC|TBANK|LHBANK|GHBANK|Krungsri|กรุงศรี|กสิกร"
-    r"|ไทยพาณิชย์|กรุงไทย|กรุงเทพ|ทหารไทย)"
-    r"(?:\s+([Xx]\d{3,}|\d{4,}))?"  # optional: masked account ref "X7290" / "x4497"
+    r"|ไทยพาณิชย์|กรุงไทย|กรุงเทพ|ทหารไทย"
+)
+
+# Standard format: "[BANK] [xREF] [NAME]"
+# e.g. "รับโอนจาก SCB X7290 นาย สุภกิณห์" → ref="SCB X7290", name="นาย สุภกิณห์"
+_COUNTERPARTY_EXTRACT_RE = re.compile(
+    rf"({_BANK_CODES})"
+    r"(?:\s+([Xx]\d{{3,}}|\d{{4,}}))?"  # optional masked account ref
     r"[ \t]*(.*?)$",
+    re.I,
+)
+
+# KBANK-payroll format: "จาก X[REF] [NAME] [BANK] ..."
+# e.g. "รับโอนเงิน จาก X3701 บมจ.แปซิฟิค ครอส ป++ KBANK PAYROLL Ref ..."
+#   → name="บมจ.แปซิฟิค ครอส ป++"
+_COUNTERPARTY_PAYROLL_RE = re.compile(
+    rf"(?:จาก|from)\s+[Xx]\d+\s+(.*?)\s+(?:{_BANK_CODES})\b",
     re.I,
 )
 
@@ -158,9 +175,18 @@ _COUNTERPARTY_EXTRACT_RE = re.compile(
 def _extract_counterparty(description: str) -> tuple[str | None, str | None]:
     """Return (counterparty_ref, counterparty_name) from a transaction description.
 
-    counterparty_ref  — bank code + optional masked number, e.g. "SCB X7290", "BAY x4497"
-    counterparty_name — person or merchant name that follows, e.g. "นาย สุภกิณห์ ธิวงค์"
+    Handles two formats:
+      1. Standard: "[BANK] [xREF] [NAME]"  e.g. "รับโอนจาก SCB X7290 นาย สุภกิณห์"
+      2. Payroll:  "จาก X[REF] [NAME] [BANK]"  e.g. "จาก X3701 บมจ.แปซิฟิค ครอส ป++ KBANK PAYROLL"
     """
+    # Try payroll/interbank format first (name before bank code)
+    m_pay = _COUNTERPARTY_PAYROLL_RE.search(description)
+    if m_pay:
+        name = m_pay.group(1).strip()
+        if name:
+            return None, name
+
+    # Standard format (name after bank code)
     m = _COUNTERPARTY_EXTRACT_RE.search(description)
     if not m:
         return None, None

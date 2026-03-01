@@ -6,6 +6,8 @@ import {
   Space,
   Drawer,
   Input,
+  InputNumber,
+  DatePicker,
   Typography,
   Popconfirm,
   message,
@@ -13,19 +15,15 @@ import {
   Select,
   Tooltip,
 } from 'antd'
-import {
-  PlusOutlined,
-  CommentOutlined,
-  DeleteOutlined,
-  LinkOutlined,
-  DisconnectOutlined,
-  BulbOutlined,
-} from '@ant-design/icons'
+import { FilterOutlined, CloseCircleOutlined, PlusOutlined, CommentOutlined, DeleteOutlined, LinkOutlined, DisconnectOutlined, BulbOutlined } from '@ant-design/icons'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import { useFinanceStore } from '@/application/stores/financeStore'
 import type { Transaction, TransactionCategory, TransactionComment } from '@/domain/finance'
 import { transactionsApi } from '@/infrastructure/api/finance'
 import dayjs from 'dayjs'
+import type { Dayjs } from 'dayjs'
+
+const { RangePicker } = DatePicker
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -42,39 +40,51 @@ const PAGE_SIZE = 50
  * Returns { label, isInternal } or null when the pattern is not recognised.
  * isInternal = true when the source bank maps to one of the user's own accounts.
  */
+const _BANK_CODE_RE = /\b(SCB|KBANK|KBank|BBL|KTB|BAY|TMB|TTB|GSB|Krungsri|กรุงศรี|กสิกร|ไทยพาณิชย์|กรุงไทย|กรุงเทพ)\b/i
+const _COMPANY_RE   = /บจก\.|หจก\.|บมจ\.|บริษัท|corp\b|co\.|ltd\b/i
+
 function parseCounterpartyFromDescription(
   description: string,
   accountNames: string[],
 ): { label: string; isInternal: boolean } | null {
-  // Full pattern: KEYWORD + BANK_CODE + REF + NAME
-  const full = description.match(
+  // Pattern A — standard: "รับโอนจาก/โอนจาก BANK xREF NAME"
+  // e.g. "รับโอนจาก KBANK x0244 บจก. เอ็กโซโกร"
+  const patA = description.match(
     /(?:รับโอนจาก|โอนเงินจาก|โอนจาก|transferred\s+from)\s+([A-Za-z]+)\s+\S+\s+([\S\s]+)/i,
   )
-  if (full) {
-    const bankCode = full[1].trim()
-    const name     = full[2].trim()
+  if (patA) {
+    const bankCode = patA[1].trim()
+    const name     = patA[2].trim()
     if (name) {
       const lBank = bankCode.toLowerCase()
-      // Check if the source bank keyword matches one of the user's account names
       const matchedAcc = accountNames.find((acc) => {
         const lAcc = acc.toLowerCase()
         return lAcc.includes(lBank) || lBank.includes(lAcc.split(' ')[0])
       })
       if (matchedAcc) {
-        // Source bank is user's own account — but is the name a company (external payee)?
-        const isCompany = /บจก\.|หจก\.|บริษัท|corp\b|co\.|ltd\b/i.test(name)
-        if (isCompany) return { label: name, isInternal: false }
+        if (_COMPANY_RE.test(name)) return { label: name, isInternal: false }
         return { label: matchedAcc, isInternal: true }
       }
-      // External bank — show the extracted name
       return { label: name, isInternal: false }
     }
   }
 
-  // Shorter pattern: "จาก NAME" (no bank ref)
-  const short = description.match(/(?:^|\s)จาก\s+([\u0E00-\u0E7Fa-zA-Z][\S\s]+)/i)
-  if (short) {
-    const name = short[1].trim()
+  // Pattern B — payroll/interbank: "จาก X[REF] [NAME] [BANK_CODE]"
+  // e.g. "รับโอนเงิน จาก X3701 บมจ.แปซิฟิค ครอส ป++ KBANK PAYROLL Ref ..."
+  const patB = description.match(
+    /(?:จาก|from)\s+[Xx]\d+\s+([\u0E00-\u0E7Fa-zA-Z][\u0E00-\u0E7Fa-zA-Z\s.+]*?)\s+(?:KBANK|KBank|SCB|BBL|KTB|BAY|TMB|TTB|Krungsri)\b/i,
+  )
+  if (patB) {
+    const name = patB[1].trim()
+    if (name && name.length >= 2) return { label: name, isInternal: false }
+  }
+
+  // Pattern C — simple "จาก NAME" fallback, strip trailing bank codes
+  const patC = description.match(/(?:^|\s)จาก\s+([\u0E00-\u0E7Fa-zA-Z][\S\s]+)/i)
+  if (patC) {
+    let name = patC[1].trim()
+    const bankM = _BANK_CODE_RE.exec(name)
+    if (bankM) name = name.slice(0, bankM.index).trim()
     if (name && name.length >= 2) return { label: name, isInternal: false }
   }
 
@@ -151,6 +161,39 @@ const Transactions: React.FC = () => {
   const [page, setPage] = useState(1)
   const [bulkApproving, setBulkApproving] = useState(false)
 
+  // ── Filters ─────────────────────────────────────────────────────────────────
+  const [filterDateRange, setFilterDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
+  const [filterType, setFilterType] = useState<string | null>(null)
+  const [filterCategoryId, setFilterCategoryId] = useState<string | null>(null)
+  const [filterAmountMin, setFilterAmountMin] = useState<number | null>(null)
+  const [filterAmountMax, setFilterAmountMax] = useState<number | null>(null)
+
+  const activeFilters = useMemo(() => {
+    const f: Record<string, unknown> = {}
+    if (filterDateRange?.[0]) f.date_from = filterDateRange[0].format('YYYY-MM-DD')
+    if (filterDateRange?.[1]) f.date_to = filterDateRange[1].format('YYYY-MM-DD')
+    if (filterType) f.transaction_type = filterType
+    if (filterCategoryId) f.category_id = filterCategoryId
+    if (filterAmountMin !== null && filterAmountMin !== undefined) f.amount_min = filterAmountMin
+    if (filterAmountMax !== null && filterAmountMax !== undefined) f.amount_max = filterAmountMax
+    if (filterCategoryId === '__uncategorized__') {
+      delete f.category_id
+      f.uncategorized = true
+    }
+    return f
+  }, [filterDateRange, filterType, filterCategoryId, filterAmountMin, filterAmountMax])
+
+  const hasActiveFilters = Object.keys(activeFilters).length > 0
+
+  const clearFilters = () => {
+    setFilterDateRange(null)
+    setFilterType(null)
+    setFilterCategoryId(null)
+    setFilterAmountMin(null)
+    setFilterAmountMax(null)
+    setPage(1)
+  }
+
   // Comments drawer
   const [commentDrawerOpen, setCommentDrawerOpen] = useState(false)
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null)
@@ -173,7 +216,7 @@ const Transactions: React.FC = () => {
     if (!trimmed || trimmed === (tx.counterparty_name ?? '')) return
     try {
       await transactionsApi.update(tx.id, { counterparty_name: trimmed })
-      fetchTransactions({ page, pageSize: PAGE_SIZE })
+      fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
     } catch {
       message.error('Failed to save counterparty')
     }
@@ -191,8 +234,8 @@ const Transactions: React.FC = () => {
   }, [fetchAccounts, fetchCategories])
 
   useEffect(() => {
-    fetchTransactions({ page, pageSize: PAGE_SIZE })
-  }, [page, fetchTransactions])
+    fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
+  }, [page, fetchTransactions, activeFilters])
 
   // Lookup maps
   const accountMap = useMemo(
@@ -322,7 +365,7 @@ const Transactions: React.FC = () => {
   const handleCategoryChange = async (tx: Transaction, categoryId: string | null) => {
     try {
       await transactionsApi.update(tx.id, { category_id: categoryId })
-      fetchTransactions({ page, pageSize: PAGE_SIZE })
+      fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
     } catch {
       message.error('Failed to update category')
     }
@@ -332,7 +375,7 @@ const Transactions: React.FC = () => {
     if (newType === tx.transaction_type) return
     try {
       await transactionsApi.update(tx.id, { transaction_type: newType })
-      fetchTransactions({ page, pageSize: PAGE_SIZE })
+      fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
     } catch {
       message.error('Failed to update transaction type')
     }
@@ -349,7 +392,7 @@ const Transactions: React.FC = () => {
       message.success(
         `Applied ${pendingSuggestions.length} category suggestion${pendingSuggestions.length !== 1 ? 's' : ''}`
       )
-      fetchTransactions({ page, pageSize: PAGE_SIZE })
+      fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
     } catch {
       message.error('Some category updates failed')
     } finally {
@@ -400,7 +443,7 @@ const Transactions: React.FC = () => {
       await transactionsApi.linkTransfer(linkSourceTx.id, linkTargetId)
       message.success('Transfer linked successfully')
       setLinkModalOpen(false)
-      fetchTransactions({ page, pageSize: PAGE_SIZE })
+      fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
     } catch (err: any) {
       message.error(err.response?.data?.detail ?? 'Link failed')
     } finally {
@@ -412,7 +455,7 @@ const Transactions: React.FC = () => {
     try {
       await transactionsApi.unlinkTransfer(tx.id)
       message.success('Transfer unlinked')
-      fetchTransactions({ page, pageSize: PAGE_SIZE })
+      fetchTransactions({ page, pageSize: PAGE_SIZE, ...activeFilters })
     } catch (err: any) {
       message.error(err.response?.data?.detail ?? 'Unlink failed')
     }
@@ -738,6 +781,75 @@ const Transactions: React.FC = () => {
                 Apply {pendingSuggestions.length} Suggestion{pendingSuggestions.length !== 1 ? 's' : ''}
               </Button>
             </Popconfirm>
+          )}
+        </Space>
+
+        {/* Filter bar */}
+        <Space wrap align="center" style={{ padding: '8px 0', borderTop: '1px solid #f0f0f0', borderBottom: '1px solid #f0f0f0' }}>
+          <FilterOutlined style={{ color: hasActiveFilters ? '#1677ff' : '#8c8c8c' }} />
+          <RangePicker
+            value={filterDateRange ?? undefined}
+            onChange={(val) => { setFilterDateRange(val as [Dayjs | null, Dayjs | null] | null); setPage(1) }}
+            size="small"
+            style={{ width: 220 }}
+            placeholder={['From date', 'To date']}
+            allowClear
+          />
+          <Select
+            value={filterType ?? undefined}
+            onChange={(v) => { setFilterType(v ?? null); setPage(1) }}
+            allowClear
+            placeholder="All types"
+            size="small"
+            style={{ width: 120 }}
+            options={[
+              { value: 'income',   label: 'Income' },
+              { value: 'expense',  label: 'Expense' },
+              { value: 'transfer', label: 'Transfer' },
+            ]}
+          />
+          <Select
+            value={filterCategoryId ?? undefined}
+            onChange={(v) => { setFilterCategoryId(v ?? null); setPage(1) }}
+            allowClear
+            showSearch
+            placeholder="All categories"
+            size="small"
+            style={{ width: 180 }}
+            filterOption={(input, option) =>
+              (option?.label as string ?? '').toLowerCase().includes(input.toLowerCase())
+            }
+            options={[
+              { value: '__uncategorized__', label: '— Uncategorized' },
+              ...flatCats.map((c) => ({ value: c.id, label: c.name })),
+            ]}
+          />
+          <Space.Compact size="small">
+            <InputNumber
+              value={filterAmountMin}
+              onChange={(v) => { setFilterAmountMin(v); setPage(1) }}
+              placeholder="Min ฿"
+              min={0}
+              style={{ width: 90 }}
+              controls={false}
+            />
+            <InputNumber
+              value={filterAmountMax}
+              onChange={(v) => { setFilterAmountMax(v); setPage(1) }}
+              placeholder="Max ฿"
+              min={0}
+              style={{ width: 90 }}
+              controls={false}
+            />
+          </Space.Compact>
+          {hasActiveFilters && (
+            <Button
+              size="small"
+              icon={<CloseCircleOutlined />}
+              onClick={clearFilters}
+            >
+              Clear
+            </Button>
           )}
         </Space>
 

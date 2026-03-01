@@ -153,6 +153,10 @@ class TransactionRepository:
         date_to: date | None = None,
         account_id: UUID | None = None,
         category_id: UUID | None = None,
+        transaction_type: str | None = None,
+        amount_min: Decimal | None = None,
+        amount_max: Decimal | None = None,
+        uncategorized: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Transaction]:
@@ -166,8 +170,16 @@ class TransactionRepository:
             conditions.append(TransactionModel.transaction_date <= date_to)
         if account_id:
             conditions.append(TransactionModel.account_id == account_id)
-        if category_id:
+        if uncategorized:
+            conditions.append(TransactionModel.category_id.is_(None))
+        elif category_id:
             conditions.append(TransactionModel.category_id == category_id)
+        if transaction_type:
+            conditions.append(TransactionModel.transaction_type == transaction_type)
+        if amount_min is not None:
+            conditions.append(TransactionModel.amount_thb >= amount_min)
+        if amount_max is not None:
+            conditions.append(TransactionModel.amount_thb <= amount_max)
 
         stmt = (
             select(TransactionModel)
@@ -185,6 +197,8 @@ class TransactionRepository:
             existing.description = transaction.description
             existing.category_id = transaction.category_id
             existing.payment_method = transaction.payment_method
+            existing.counterparty_name = transaction.counterparty_name
+            existing.counterparty_ref = transaction.counterparty_ref
             existing.transfer_pair_id = transaction.transfer_pair_id
             existing.tags = transaction.tags
             existing.transaction_date = transaction.transaction_date
@@ -225,6 +239,10 @@ class TransactionRepository:
         date_to: date | None = None,
         account_id: UUID | None = None,
         category_id: UUID | None = None,
+        transaction_type: str | None = None,
+        amount_min: Decimal | None = None,
+        amount_max: Decimal | None = None,
+        uncategorized: bool | None = None,
     ) -> int:
         conditions = [
             TransactionModel.user_id == user_id,
@@ -236,8 +254,16 @@ class TransactionRepository:
             conditions.append(TransactionModel.transaction_date <= date_to)
         if account_id:
             conditions.append(TransactionModel.account_id == account_id)
-        if category_id:
+        if uncategorized:
+            conditions.append(TransactionModel.category_id.is_(None))
+        elif category_id:
             conditions.append(TransactionModel.category_id == category_id)
+        if transaction_type:
+            conditions.append(TransactionModel.transaction_type == transaction_type)
+        if amount_min is not None:
+            conditions.append(TransactionModel.amount_thb >= amount_min)
+        if amount_max is not None:
+            conditions.append(TransactionModel.amount_thb <= amount_max)
         stmt = select(sqlfunc.count()).select_from(TransactionModel).where(and_(*conditions))
         result = await self._s.execute(stmt)
         return result.scalar_one()
