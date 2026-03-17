@@ -27,7 +27,7 @@ from pbam.domain.finance.entities import (
 from pbam.domain.identity.entities import User
 
 if TYPE_CHECKING:
-    from pbam.application.finance.queries import FlowTree
+    from pbam.application.finance.queries import FlowTree, Summary
     from pbam.application.identity.commands import LoginResult, RegisterResult
 
 
@@ -144,6 +144,14 @@ class PBAMFacade:
 
     async def get_flow_tree(self, user_id: UUID, date_from: date | None, date_to: date | None) -> "FlowTree":
         return await fin_queries.get_flow_tree(
+            user_id=user_id, date_from=date_from, date_to=date_to,
+            account_repo=self._account_repo,
+            category_repo=self._category_repo,
+            transaction_repo=self._transaction_repo,
+        )
+
+    async def get_summary(self, user_id: UUID, date_from: date | None, date_to: date | None) -> "Summary":
+        return await fin_queries.get_summary(
             user_id=user_id, date_from=date_from, date_to=date_to,
             account_repo=self._account_repo,
             category_repo=self._category_repo,

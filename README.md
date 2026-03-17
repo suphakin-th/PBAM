@@ -18,6 +18,7 @@ who mtf want to use it for youself (Just personal and non-comercial) take it!!.
 
 ## Features
 
+- **Summary dashboard** — one-page overview: KPI cards, monthly income/expense bar chart, top expense & income category donuts, account balance table, payment-method breakdown — all filterable by period (this month / last 3 months / this year / all time / custom range)
 - **Money-flow tree** — income sources → bank accounts → expense categories, visualized as an interactive DAG (ReactFlow)
 - **Transaction management** — CRUD with category assignment, tags, comments, and recurring-transaction flags
 - **PDF import wizard** — upload a bank statement PDF, OCR extracts rows automatically, review/correct each row, confirm to commit to the ledger
@@ -25,6 +26,19 @@ who mtf want to use it for youself (Just personal and non-comercial) take it!!.
 - **Category tree** — unlimited hierarchy, income/expense/transfer types, color + icon per node
 - **Transaction groups** — manually group related transactions (e.g. a trip)
 - **JWT auth** — username/password login, token revocation via jti hash
+
+---
+
+## Pages (What Each Screen Does)
+
+| Page | URL | What you can do |
+|------|-----|-----------------|
+| **Dashboard** | `/` | See the full money-flow diagram — income sources → accounts → expense categories as an animated, zoomable graph. Filter by any date range. |
+| **Summary** | `/summary` | One-page analytics report. Pick a period (This Month / Last 3 Months / This Year / All Time / custom). See income, expense, net flow, transaction count, monthly bar chart, top expense & income category donuts, account balances, and payment-method breakdown. |
+| **Transactions** | `/transactions` | Full list of all transactions. Filter, search, categorize, add tags, write comments, link transfer pairs. Bulk-apply category suggestions. |
+| **Categories** | `/categories` | Manage your category tree. Add sub-categories with color and icon. System categories are locked. |
+| **Import PDF** | `/import` | Upload a bank statement PDF. The system reads it automatically (OCR), shows you a table of extracted rows, lets you fix mistakes, then commits everything to your transaction list in one click. |
+| **Settings** | `/settings` | View your profile, manage bank accounts (add/delete), and log out. |
 
 ---
 
@@ -83,7 +97,7 @@ PBAM/
             ├── AppLayout.tsx # Sidebar navigation shell
             ├── facade/       # Bridges stores → UI props
             ├── components/   # FlowTree, TransactionTable, StagingReviewTable, …
-            └── pages/        # Dashboard, Transactions, Categories, Import, Settings, Login
+            └── pages/        # Dashboard, Summary, Transactions, Categories, Import, Settings, Login
 ```
 
 **Key design decisions:**
@@ -292,6 +306,21 @@ Interactive docs at `http://localhost:8000/docs` (Swagger UI) or `http://localho
 | POST | `/groups/{id}/members/{tx_id}` | Add transaction to group |
 | DELETE | `/groups/{id}/members/{tx_id}` | Remove from group |
 | DELETE | `/groups/{id}` | Delete group |
+
+### Summary
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/summary` | Aggregated analytics for a period (`date_from`, `date_to` optional query params) |
+
+**Response includes:**
+- `total_income_thb`, `total_expense_thb`, `net_thb` — period totals
+- `transaction_count`, `uncategorized_count`, `recurring_count` — transaction stats
+- `monthly_trend[]` — income / expense / net per month (`YYYY-MM`)
+- `top_expense_categories[]` — top 10 expense categories with amount and percentage
+- `top_income_categories[]` — top 10 income sources with amount and percentage
+- `accounts[]` — each account with all-time balance and period income/expense
+- `payment_methods[]` — breakdown by payment method (credit card, QR code, etc.)
 
 ### OCR Import
 

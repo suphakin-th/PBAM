@@ -257,3 +257,239 @@ async def get_category_tree(
 ) -> list[TransactionCategory]:
     """Return flat list of categories; caller organizes into tree."""
     return await repo.list_tree_by_user(user_id)
+
+
+# ── Summary data structures ────────────────────────────────────────────────────
+
+@dataclass
+class CategoryStat:
+    category_id: str
+    name: str
+    color: str | None
+    icon: str | None
+    total_thb: Decimal
+    count: int
+    percentage: float
+
+
+@dataclass
+class MonthlyPoint:
+    month: str          # "YYYY-MM"
+    income_thb: Decimal
+    expense_thb: Decimal
+    net_thb: Decimal
+    count: int
+
+
+@dataclass
+class AccountStat:
+    account_id: str
+    name: str
+    account_type: str
+    currency: str
+    balance_thb: Decimal        # initial_balance + all-time net
+    period_income_thb: Decimal
+    period_expense_thb: Decimal
+
+
+@dataclass
+class PaymentMethodStat:
+    method: str
+    total_thb: Decimal
+    count: int
+    percentage: float
+
+
+@dataclass
+class Summary:
+    date_from: date | None
+    date_to: date | None
+    total_income_thb: Decimal
+    total_expense_thb: Decimal
+    net_thb: Decimal
+    transaction_count: int
+    uncategorized_count: int
+    recurring_count: int
+    monthly_trend: list[MonthlyPoint]
+    top_expense_categories: list[CategoryStat]
+    top_income_categories: list[CategoryStat]
+    accounts: list[AccountStat]
+    payment_methods: list[PaymentMethodStat]
+
+
+def _resolve_cat(cat_key: str, categories: dict, field: str, default):
+    """Safe category field lookup."""
+    if cat_key == "uncategorized":
+        return default
+    try:
+        cat = categories.get(UUID(cat_key))
+        return getattr(cat, field, default) if cat else default
+    except (ValueError, AttributeError):
+        return default
+
+
+async def get_summary(
+    *,
+    user_id: UUID,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    account_repo: IAccountRepository,
+    category_repo: ITransactionCategoryRepository,
+    transaction_repo: ITransactionRepository,
+) -> Summary:
+    """Aggregate summary statistics for the given period."""
+    period_txs = await transaction_repo.list_by_user(
+        user_id, date_from=date_from, date_to=date_to, limit=10000
+    )
+    all_txs = await transaction_repo.list_by_user(user_id, limit=50000)
+    accounts = {a.id: a for a in await account_repo.list_by_user(user_id)}
+    categories = {c.id: c for c in await category_repo.list_tree_by_user(user_id)}
+
+    total_income = Decimal("0")
+    total_expense = Decimal("0")
+    uncategorized_count = 0
+    recurring_count = 0
+    transaction_count = 0
+    monthly: dict[str, dict] = {}
+    expense_by_cat: dict[str, Decimal] = {}
+    expense_count_by_cat: dict[str, int] = {}
+    income_by_cat: dict[str, Decimal] = {}
+    income_count_by_cat: dict[str, int] = {}
+    payment_by_method: dict[str, Decimal] = {}
+    payment_count_by_method: dict[str, int] = {}
+    account_period_income: dict[str, Decimal] = {}
+    account_period_expense: dict[str, Decimal] = {}
+
+    for tx in period_txs:
+        if tx.is_deleted:
+            continue
+        transaction_count += 1
+        month_key = tx.transaction_date.strftime("%Y-%m")
+        if month_key not in monthly:
+            monthly[month_key] = {"income_thb": Decimal("0"), "expense_thb": Decimal("0"), "count": 0}
+        monthly[month_key]["count"] += 1
+
+        cat_key = str(tx.category_id) if tx.category_id else "uncategorized"
+        if not tx.category_id:
+            uncategorized_count += 1
+        if tx.is_recurring:
+            recurring_count += 1
+
+        ak = str(tx.account_id)
+        if tx.transaction_type == TransactionType.INCOME:
+            total_income += tx.money.amount_thb
+            monthly[month_key]["income_thb"] += tx.money.amount_thb
+            income_by_cat[cat_key] = income_by_cat.get(cat_key, Decimal("0")) + tx.money.amount_thb
+            income_count_by_cat[cat_key] = income_count_by_cat.get(cat_key, 0) + 1
+            account_period_income[ak] = account_period_income.get(ak, Decimal("0")) + tx.money.amount_thb
+        elif tx.transaction_type == TransactionType.EXPENSE:
+            total_expense += tx.money.amount_thb
+            monthly[month_key]["expense_thb"] += tx.money.amount_thb
+            expense_by_cat[cat_key] = expense_by_cat.get(cat_key, Decimal("0")) + tx.money.amount_thb
+            expense_count_by_cat[cat_key] = expense_count_by_cat.get(cat_key, 0) + 1
+            account_period_expense[ak] = account_period_expense.get(ak, Decimal("0")) + tx.money.amount_thb
+
+        if tx.transaction_type in (TransactionType.INCOME, TransactionType.EXPENSE):
+            method = tx.payment_method or "unknown"
+            payment_by_method[method] = payment_by_method.get(method, Decimal("0")) + tx.money.amount_thb
+            payment_count_by_method[method] = payment_count_by_method.get(method, 0) + 1
+
+    # All-time account balances
+    account_all_income: dict[str, Decimal] = {}
+    account_all_expense: dict[str, Decimal] = {}
+    for tx in all_txs:
+        if tx.is_deleted:
+            continue
+        ak = str(tx.account_id)
+        if tx.transaction_type == TransactionType.INCOME:
+            account_all_income[ak] = account_all_income.get(ak, Decimal("0")) + tx.money.amount_thb
+        elif tx.transaction_type == TransactionType.EXPENSE:
+            account_all_expense[ak] = account_all_expense.get(ak, Decimal("0")) + tx.money.amount_thb
+
+    monthly_trend = sorted(
+        [
+            MonthlyPoint(
+                month=k,
+                income_thb=v["income_thb"],
+                expense_thb=v["expense_thb"],
+                net_thb=v["income_thb"] - v["expense_thb"],
+                count=v["count"],
+            )
+            for k, v in monthly.items()
+        ],
+        key=lambda x: x.month,
+    )
+
+    top_expense_cats = [
+        CategoryStat(
+            category_id=cat_key,
+            name=_resolve_cat(cat_key, categories, "name", "Uncategorized"),
+            color=_resolve_cat(cat_key, categories, "color", "#ff4d4f"),
+            icon=_resolve_cat(cat_key, categories, "icon", None),
+            total_thb=total,
+            count=expense_count_by_cat.get(cat_key, 0),
+            percentage=round(float(total / total_expense * 100), 1) if total_expense > 0 else 0.0,
+        )
+        for cat_key, total in sorted(expense_by_cat.items(), key=lambda x: x[1], reverse=True)[:10]
+    ]
+
+    top_income_cats = [
+        CategoryStat(
+            category_id=cat_key,
+            name=_resolve_cat(cat_key, categories, "name", "Uncategorized"),
+            color=_resolve_cat(cat_key, categories, "color", "#52c41a"),
+            icon=_resolve_cat(cat_key, categories, "icon", None),
+            total_thb=total,
+            count=income_count_by_cat.get(cat_key, 0),
+            percentage=round(float(total / total_income * 100), 1) if total_income > 0 else 0.0,
+        )
+        for cat_key, total in sorted(income_by_cat.items(), key=lambda x: x[1], reverse=True)[:10]
+    ]
+
+    account_stats = [
+        AccountStat(
+            account_id=str(account.id),
+            name=account.name,
+            account_type=str(account.account_type),
+            currency=account.currency,
+            balance_thb=(
+                account.initial_balance.amount_thb
+                + account_all_income.get(str(account.id), Decimal("0"))
+                - account_all_expense.get(str(account.id), Decimal("0"))
+            ),
+            period_income_thb=account_period_income.get(str(account.id), Decimal("0")),
+            period_expense_thb=account_period_expense.get(str(account.id), Decimal("0")),
+        )
+        for account in accounts.values()
+    ]
+
+    total_payment = sum(payment_by_method.values()) or Decimal("1")
+    payment_stats = sorted(
+        [
+            PaymentMethodStat(
+                method=method,
+                total_thb=total,
+                count=payment_count_by_method[method],
+                percentage=round(float(total / total_payment * 100), 1),
+            )
+            for method, total in payment_by_method.items()
+        ],
+        key=lambda x: x.total_thb,
+        reverse=True,
+    )
+
+    return Summary(
+        date_from=date_from,
+        date_to=date_to,
+        total_income_thb=total_income,
+        total_expense_thb=total_expense,
+        net_thb=total_income - total_expense,
+        transaction_count=transaction_count,
+        uncategorized_count=uncategorized_count,
+        recurring_count=recurring_count,
+        monthly_trend=monthly_trend,
+        top_expense_categories=top_expense_cats,
+        top_income_categories=top_income_cats,
+        accounts=account_stats,
+        payment_methods=payment_stats,
+    )

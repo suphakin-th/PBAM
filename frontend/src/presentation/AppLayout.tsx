@@ -1,6 +1,7 @@
 import React from 'react'
 import { Layout, Menu, Typography } from 'antd'
 import {
+  BarChartOutlined,
   DashboardOutlined,
   SwapOutlined,
   TagsOutlined,
@@ -14,6 +15,7 @@ const { Title } = Typography
 
 const MENU_ITEMS = [
   { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
+  { key: '/summary', icon: <BarChartOutlined />, label: 'Summary' },
   { key: '/transactions', icon: <SwapOutlined />, label: 'Transactions' },
   { key: '/categories', icon: <TagsOutlined />, label: 'Categories' },
   { key: '/import', icon: <UploadOutlined />, label: 'Import PDF' },

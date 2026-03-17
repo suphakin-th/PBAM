@@ -2,6 +2,7 @@ import { apiClient } from './client'
 import type {
   Account,
   FlowTree,
+  Summary,
   Transaction,
   TransactionCategory,
   TransactionComment,
@@ -47,4 +48,9 @@ export const groupsApi = {
     apiClient.post(`/groups/${groupId}/members/${txId}`),
   removeMember: (groupId: string, txId: string) =>
     apiClient.delete(`/groups/${groupId}/members/${txId}`),
+}
+
+export const summaryApi = {
+  get: (params?: { date_from?: string; date_to?: string }) =>
+    apiClient.get<Summary>('/summary', { params }),
 }

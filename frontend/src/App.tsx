@@ -8,6 +8,7 @@ import Transactions from '@/presentation/pages/Transactions'
 import Categories from '@/presentation/pages/Categories'
 import Import from '@/presentation/pages/Import'
 import Settings from '@/presentation/pages/Settings'
+import Summary from '@/presentation/pages/Summary'
 import Login from '@/presentation/pages/Login'
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -44,6 +45,7 @@ const App: React.FC = () => {
             }
           >
             <Route path="/" element={<Dashboard />} />
+            <Route path="/summary" element={<Summary />} />
             <Route path="/transactions" element={<Transactions />} />
             <Route path="/categories" element={<Categories />} />
             <Route path="/import" element={<Import />} />

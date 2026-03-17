@@ -194,3 +194,56 @@ class FlowTreeResponse(BaseModel):
     total_income_thb: Decimal
     total_expense_thb: Decimal
     net_thb: Decimal
+
+
+# ── Summary ────────────────────────────────────────────────────────────────────
+
+class CategoryStatResponse(BaseModel):
+    category_id: str
+    name: str
+    color: str | None
+    icon: str | None
+    total_thb: Decimal
+    count: int
+    percentage: float
+
+
+class MonthlyPointResponse(BaseModel):
+    month: str
+    income_thb: Decimal
+    expense_thb: Decimal
+    net_thb: Decimal
+    count: int
+
+
+class AccountStatResponse(BaseModel):
+    account_id: str
+    name: str
+    account_type: str
+    currency: str
+    balance_thb: Decimal
+    period_income_thb: Decimal
+    period_expense_thb: Decimal
+
+
+class PaymentMethodStatResponse(BaseModel):
+    method: str
+    total_thb: Decimal
+    count: int
+    percentage: float
+
+
+class SummaryResponse(BaseModel):
+    date_from: date | None
+    date_to: date | None
+    total_income_thb: Decimal
+    total_expense_thb: Decimal
+    net_thb: Decimal
+    transaction_count: int
+    uncategorized_count: int
+    recurring_count: int
+    monthly_trend: list[MonthlyPointResponse]
+    top_expense_categories: list[CategoryStatResponse]
+    top_income_categories: list[CategoryStatResponse]
+    accounts: list[AccountStatResponse]
+    payment_methods: list[PaymentMethodStatResponse]

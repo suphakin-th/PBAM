@@ -93,3 +93,56 @@ export interface FlowTree {
   total_expense_thb: number
   net_thb: number
 }
+
+// ── Summary types ─────────────────────────────────────────────────────────────
+
+export interface CategoryStat {
+  category_id: string
+  name: string
+  color: string | null
+  icon: string | null
+  total_thb: number
+  count: number
+  percentage: number
+}
+
+export interface MonthlyPoint {
+  month: string
+  income_thb: number
+  expense_thb: number
+  net_thb: number
+  count: number
+}
+
+export interface AccountStat {
+  account_id: string
+  name: string
+  account_type: AccountType
+  currency: string
+  balance_thb: number
+  period_income_thb: number
+  period_expense_thb: number
+}
+
+export interface PaymentMethodStat {
+  method: string
+  total_thb: number
+  count: number
+  percentage: number
+}
+
+export interface Summary {
+  date_from: string | null
+  date_to: string | null
+  total_income_thb: number
+  total_expense_thb: number
+  net_thb: number
+  transaction_count: number
+  uncategorized_count: number
+  recurring_count: number
+  monthly_trend: MonthlyPoint[]
+  top_expense_categories: CategoryStat[]
+  top_income_categories: CategoryStat[]
+  accounts: AccountStat[]
+  payment_methods: PaymentMethodStat[]
+}
