@@ -34,8 +34,8 @@ const { Title, Text } = Typography
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const fmtThb = (v: number) =>
-  `฿${v.toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+const fmtThb = (v: number | string) =>
+  `฿${Number(v).toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 
 const PRESETS = [
   { label: 'This Month', value: 'this_month' },
@@ -100,8 +100,8 @@ const accountColumns = [
     title: 'Balance',
     dataIndex: 'balance_thb',
     align: 'right' as const,
-    render: (v: number) => (
-      <Text strong style={{ color: v >= 0 ? '#52c41a' : '#ff4d4f' }}>
+    render: (v: number | string) => (
+      <Text strong style={{ color: Number(v) >= 0 ? '#52c41a' : '#ff4d4f' }}>
         {fmtThb(v)}
       </Text>
     ),
@@ -110,8 +110,8 @@ const accountColumns = [
     title: 'Income (period)',
     dataIndex: 'period_income_thb',
     align: 'right' as const,
-    render: (v: number) =>
-      v > 0 ? (
+    render: (v: number | string) =>
+      Number(v) > 0 ? (
         <Text style={{ color: '#52c41a' }}>{fmtThb(v)}</Text>
       ) : (
         <Text type="secondary">—</Text>
@@ -121,8 +121,8 @@ const accountColumns = [
     title: 'Expense (period)',
     dataIndex: 'period_expense_thb',
     align: 'right' as const,
-    render: (v: number) =>
-      v > 0 ? (
+    render: (v: number | string) =>
+      Number(v) > 0 ? (
         <Text style={{ color: '#ff4d4f' }}>{fmtThb(v)}</Text>
       ) : (
         <Text type="secondary">—</Text>
